@@ -1,5 +1,6 @@
-import { loadChatMessages, loadChatSessions } from "./chat-storage";
-import { loadShoppingState } from "./shopping-storage";
+import { CHAT_REQUEST_REPLY_EVENT, createOrGetSession, loadChatMessages, loadChatSessions, pushChatMessage } from "./chat-storage";
+import { resolveUserIdentity } from "./settings-storage";
+import { loadShoppingState, saveShoppingState } from "./shopping-storage";
 import type { ShoppingOrder } from "./shopping-types";
 import type { CheckPhoneShoppingTone } from "./checkphone-config";
 
@@ -105,4 +106,82 @@ export function loadDeliveredShoppingGifts(options: LoadShoppingGiftOptions = {}
     if (timeDiff !== 0) return timeDiff;
     return b.orderId.localeCompare(a.orderId);
   });
+}
+
+export function processDueGiftOrders(nowMs: number = Date.now()): string[] {
+  const state = loadShoppingState();
+  const sentIds = loadSentShoppingGiftIds();
+  const triggeredSessionIds = new Set<string>();
+  let stateChanged = false;
+  const nowIso = new Date(nowMs).toISOString();
+
+  const nextOrders = state.orders.map(order => {
+    if (!order.giftRecipientId || order.giftAutoSentAt) return order;
+    if (!isOrderDelivered(order, nowMs)) return order;
+
+    const deliveredEvent = getDeliveredEvent(order);
+    const session = createOrGetSession(order.giftRecipientId);
+    const senderName = resolveUserIdentity(order.giftRecipientId, "chat")?.name || "你";
+    let sentAny = false;
+
+    order.items.forEach((item, itemIndex) => {
+      const quantity = parseGiftQuantity(item.quantityLabel);
+      for (let unitIndex = 1; unitIndex <= quantity; unitIndex += 1) {
+        const giftId = `${order.id}::${item.id || itemIndex}::${unitIndex}`;
+        if (sentIds.has(giftId)) continue;
+        sentIds.add(giftId);
+        pushChatMessage({
+          sessionId: session.id,
+          role: "user",
+          content: "",
+          mediaType: "gift",
+          mediaData: {
+            label: item.title,
+            giftName: item.title,
+            shoppingGiftId: giftId,
+            giftOrderId: order.id,
+            giftItemId: item.id || `${itemIndex}`,
+            giftMerchantLabel: item.merchantLabel || order.merchantLabel,
+            giftPriceLabel: item.priceLabel,
+            giftDetail: item.detail || item.subtitle,
+            giftPreviewIcon: item.previewIcon,
+            giftTone: item.tone,
+            giftDeliveredAt: deliveredEvent?.timestamp || nowIso,
+            giftSentAt: nowIso,
+            senderName,
+            recipientId: order.giftRecipientId,
+            recipientName: order.giftRecipientName,
+          },
+        });
+        sentAny = true;
+      }
+    });
+
+    if (sentAny && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("chat-messages-updated", { detail: { sessionId: session.id } }));
+      triggeredSessionIds.add(session.id);
+    }
+
+    stateChanged = true;
+    return {
+      ...order,
+      giftAutoSentAt: nowIso,
+    };
+  });
+
+  if (stateChanged) {
+    saveShoppingState({ ...state, orders: nextOrders });
+  }
+
+  return [...triggeredSessionIds];
+}
+
+export function triggerGiftRecipientReply(sessionId: string, characterId?: string): void {
+  if (typeof window === "undefined" || !sessionId) return;
+  window.dispatchEvent(new CustomEvent(CHAT_REQUEST_REPLY_EVENT, {
+    detail: {
+      sessionId,
+      ...(characterId ? { characterId } : {}),
+    },
+  }));
 }

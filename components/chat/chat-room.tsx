@@ -3539,6 +3539,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
             giftItemId: gift.itemId,
             giftMerchantLabel: gift.merchantLabel,
             giftPriceLabel: gift.priceLabel,
+            giftDetail: gift.detail || gift.subtitle,
             giftPreviewIcon: gift.previewIcon,
             giftTone: gift.tone,
             giftDeliveredAt: gift.deliveredAt,
@@ -3546,7 +3547,10 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
             senderName: userIdentity?.name || "你",
             ...(recipient ? { recipientId: recipient.id, recipientName: recipient.name } : {}),
         });
-        if (sent) showChatToast("礼物已送出");
+        if (sent) {
+            showChatToast("礼物已送出");
+            void triggerAIResponse();
+        }
         return sent;
     };
 

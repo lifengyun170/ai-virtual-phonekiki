@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronLeft,
   CreditCard,
+  Gift,
   Heart,
   HeartHandshake,
   Home,
@@ -31,6 +32,7 @@ import { splitBilingualText } from "@/lib/bilingual-text";
 import { loadCharacters } from "@/lib/character-storage";
 import type { Character } from "@/lib/character-types";
 import { createOrGetSession, pushChatMessage } from "@/lib/chat-storage";
+import { processDueGiftOrders, triggerGiftRecipientReply } from "@/lib/shopping-gift-utils";
 import {
   DEFAULT_SHOPPING_REFRESH_PROMPT,
   DEFAULT_SHOPPING_SEARCH_PROMPT,
@@ -357,6 +359,10 @@ function buildOrderFromCart(
     payerCharacterId?: string;
     payerCharacterName?: string;
     paymentRequestedAt?: string;
+    giftRecipientId?: string;
+    giftRecipientName?: string;
+    giftAutoSentAt?: string;
+    deliverImmediately?: boolean;
   } = {},
 ): ShoppingOrder {
   const now = new Date();
@@ -364,20 +370,27 @@ function buildOrderFromCart(
   const summaryTitles = cartItems.slice(0, 3).map(item => normalizeCheckPhoneText(item.title));
   const summary = summaryTitles.join("、") + (cartItems.length > 3 ? ` 等 ${cartItems.length} 件商品` : "");
   const merchantLabel = cartItems.length === 1 ? cartItems[0]?.merchantLabel ?? "SHOP" : `${cartItems.length} 件商品`;
+  const immediateTimeline: ShoppingShippingEvent[] = [
+    { status: "ordered", label: "已下单", timeLabel: formatShoppingDateTime(now), timestamp: now.toISOString() },
+    { status: "delivered", label: "已到货", timeLabel: formatShoppingDateTime(now), timestamp: now.toISOString() },
+  ];
   return {
     id,
-    statusLabel: options.statusLabel ?? "待发货",
+    statusLabel: options.deliverImmediately ? "已到货" : (options.statusLabel ?? "待发货"),
     timeLabel: formatShoppingDateTime(now),
     totalLabel,
     merchantLabel,
     summary,
     note: options.note ?? `已结算购物车中的 ${cartItems.length} 件商品。`,
-    shippingTimeline: options.skipShipping ? [] : buildShippingTimeline(id, now, settings),
+    shippingTimeline: options.skipShipping ? [] : (options.deliverImmediately ? immediateTimeline : buildShippingTimeline(id, now, settings)),
     paymentStatus: options.paymentStatus,
     paymentRequestId: options.paymentRequestId,
     payerCharacterId: options.payerCharacterId,
     payerCharacterName: options.payerCharacterName,
     paymentRequestedAt: options.paymentRequestedAt,
+    giftRecipientId: options.giftRecipientId,
+    giftRecipientName: options.giftRecipientName,
+    giftAutoSentAt: options.giftAutoSentAt,
     items: cartItems.map((item, index) => ({
       id: `${id}_item_${index + 1}`,
       title: item.title,
@@ -428,6 +441,13 @@ export function ShoppingApp({ onClose, visible = true, onIdle, onBusyChange }: S
   const [paymentRequestTargets, setPaymentRequestTargets] = useState<Character[]>([]);
   const [selectedPaymentRequestTargetId, setSelectedPaymentRequestTargetId] = useState("");
   const [paymentRequestError, setPaymentRequestError] = useState<string | null>(null);
+  const [giftCheckoutOpen, setGiftCheckoutOpen] = useState(false);
+  const [giftCheckoutItems, setGiftCheckoutItems] = useState<ShoppingCartItem[]>([]);
+  const [giftCheckoutFromCart, setGiftCheckoutFromCart] = useState(false);
+  const [giftTargets, setGiftTargets] = useState<Character[]>([]);
+  const [selectedGiftTargetId, setSelectedGiftTargetId] = useState("");
+  const [giftDeliverImmediately, setGiftDeliverImmediately] = useState(true);
+  const [giftCheckoutError, setGiftCheckoutError] = useState<string | null>(null);
   const [confirmCartDeleteItemId, setConfirmCartDeleteItemId] = useState<string | null>(null);
   const [walletState, setWalletState] = useState<WalletState>(() => loadWalletState());
   const [selectedPaymentSourceId, setSelectedPaymentSourceId] = useState<string>(WALLET_BALANCE_ACCOUNT_ID);
@@ -542,6 +562,14 @@ export function ShoppingApp({ onClose, visible = true, onIdle, onBusyChange }: S
     [selectedPaymentSourceId, walletState],
   );
   const selectedPaymentSourceCanPay = Boolean(selectedPaymentSource && selectedPaymentSource.balance >= cartTotals.totalPayment);
+  const giftTotals = useMemo(() => {
+    const orderAmount = giftCheckoutItems.reduce(
+      (sum, item) => sum + parseShoppingAmount(item.priceLabel) * parseShoppingQuantity(item.quantityLabel),
+      0,
+    );
+    return { orderAmount, totalPayment: orderAmount };
+  }, [giftCheckoutItems]);
+  const selectedPaymentSourceCanPayGift = Boolean(selectedPaymentSource && selectedPaymentSource.balance >= giftTotals.totalPayment);
 
   const savedIds = useMemo(() => new Set(state.savedItems.map(item => item.id)), [state.savedItems]);
   const cartIds = useMemo(() => new Set(state.cartItems.map(item => item.id)), [state.cartItems]);
@@ -857,6 +885,86 @@ export function ShoppingApp({ onClose, visible = true, onIdle, onBusyChange }: S
     setSelectedPaymentRequestTargetId(targets[0]?.id ?? "");
     setPaymentRequestError(null);
     setPaymentRequestOpen(true);
+  }
+
+  function openGiftCheckoutSheet(items: ShoppingCartItem[], fromCart: boolean) {
+    if (items.length === 0) return;
+    const nextWalletState = loadWalletState();
+    setWalletState(nextWalletState);
+    setSelectedPaymentSourceId(WALLET_BALANCE_ACCOUNT_ID);
+    const targets = loadCharacters();
+    setGiftTargets(targets);
+    setSelectedGiftTargetId(current => (targets.some(t => t.id === current) ? current : (targets[0]?.id ?? "")));
+    setGiftCheckoutItems(items);
+    setGiftCheckoutFromCart(fromCart);
+    setGiftDeliverImmediately(true);
+    setGiftCheckoutError(null);
+    setGiftCheckoutOpen(true);
+  }
+
+  function handleGiftCheckout() {
+    if (giftCheckoutItems.length === 0) return;
+    const target = giftTargets.find(item => item.id === selectedGiftTargetId);
+    if (!target) {
+      setGiftCheckoutError("请选择要送礼物的角色。");
+      return;
+    }
+    const paymentSource = selectedPaymentSource;
+    if (!paymentSource) {
+      setGiftCheckoutError("请选择付款方式。");
+      return;
+    }
+    const order = buildOrderFromCart(
+      giftCheckoutItems,
+      formatShoppingAmount(giftTotals.totalPayment),
+      state.settings,
+      {
+        note: `买给 ${target.name} 的礼物（${giftDeliverImmediately ? "闪送到货已送出" : "到货后自动送出"}）。`,
+        giftRecipientId: target.id,
+        giftRecipientName: target.name,
+        deliverImmediately: giftDeliverImmediately,
+      },
+    );
+    const paymentResult = payWithWalletAccount({
+      accountId: paymentSource.id,
+      amount: giftTotals.totalPayment,
+      title: `给${target.name}买礼物`,
+      detail: `礼物订单：${order.summary}`,
+      category: "购物",
+      relatedOrderId: order.id,
+    });
+    if (!paymentResult.ok || !paymentResult.transaction) {
+      setWalletState(paymentResult.state);
+      setGiftCheckoutError(paymentResult.error ?? "付款失败。");
+      return;
+    }
+    setWalletState(paymentResult.state);
+    const paidOrder: ShoppingOrder = {
+      ...order,
+      paymentStatus: "paid_by_user",
+      paymentCardId: paymentSource.id,
+      paymentCardLabel: paymentSource.id === WALLET_BALANCE_ACCOUNT_ID ? "余额支付" : `${paymentSource.title}（${paymentSource.description.replace(" · 银行卡", "")}）`,
+      paymentTransactionId: paymentResult.transaction.id,
+      paidAt: paymentResult.transaction.createdAt,
+    };
+    const nextState = saveShoppingState({
+      ...state,
+      orders: [paidOrder, ...state.orders],
+      cartItems: giftCheckoutFromCart ? [] : state.cartItems,
+    });
+    setState(nextState);
+    if (giftDeliverImmediately) {
+      const dueSessions = processDueGiftOrders(Date.now());
+      setState(loadShoppingState());
+      for (const sessionId of dueSessions) {
+        triggerGiftRecipientReply(sessionId, target.id);
+      }
+    }
+    setSelectedProduct(null);
+    setSelectedTab("orders");
+    setSelectedOrderId(paidOrder.id);
+    setGiftCheckoutError(null);
+    setGiftCheckoutOpen(false);
   }
 
   function sendPaymentRequest() {
@@ -1400,6 +1508,14 @@ export function ShoppingApp({ onClose, visible = true, onIdle, onBusyChange }: S
                         <button type="button" onClick={openCheckoutSheet} style={{ width: "100%", background: "#ff6b00", color: "#fff", borderRadius: "24px", padding: "14px 0", fontSize: "calc(14px*var(--app-text-scale,1))", fontWeight: "bold", border: "none" }}>Checkout</button>
                         <button
                           type="button"
+                          onClick={() => openGiftCheckoutSheet(state.cartItems, true)}
+                          style={{ width: "100%", background: "#fdf2f8", color: "#be185d", borderRadius: "24px", padding: "13px 0", fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 800, border: "1px solid rgba(236,72,153,0.22)", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
+                        >
+                          <Gift size={16} strokeWidth={2.4} />
+                          买给TA当礼物
+                        </button>
+                        <button
+                          type="button"
                           onClick={openPaymentRequestSheet}
                           style={{ width: "100%", background: "#fff7ed", color: "#b45309", borderRadius: "24px", padding: "13px 0", fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 800, border: "1px solid rgba(255,107,0,0.18)", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
                         >
@@ -1571,34 +1687,56 @@ export function ShoppingApp({ onClose, visible = true, onIdle, onBusyChange }: S
                 </p>
               </div>
 
-              <div style={{ marginTop: "auto", display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: "14px" }}>
-                <div style={{ display: "flex", flexDirection: "column" }}>
+              <div style={{ marginTop: "auto", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", paddingTop: "14px" }}>
+                <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
                   <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "#999" }}>Price</span>
                   <strong style={{ fontSize: "calc(18px*var(--app-text-scale,1))", color: "#222" }}>{selectedProduct.priceLabel}</strong>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => addToCart(selectedProduct)}
-                  style={{
-                    background: selectedProductRecentlyAdded ? "#16a34a" : "#222",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: "24px",
-                    padding: "12px 24px",
-                    fontSize: "calc(13px*var(--app-text-scale,1))",
-                    fontWeight: "bold",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    minWidth: "128px",
-                    justifyContent: "center",
-                    transform: selectedProductRecentlyAdded ? "scale(1.03)" : "scale(1)",
-                    transition: "background 160ms ease, transform 180ms ease",
-                  }}
-                >
-                  {selectedProductRecentlyAdded ? <Check size={16} strokeWidth={3} /> : <ShoppingCart size={16} />}
-                  {selectedProductRecentlyAdded ? "Added" : cartIds.has(selectedProduct.id) ? "Add Again" : "Add to Cart"}
-                </button>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    onClick={() => openGiftCheckoutSheet([productAsCartItem(selectedProduct, 1)], false)}
+                    style={{
+                      background: "#fdf2f8",
+                      color: "#be185d",
+                      border: "1px solid rgba(236,72,153,0.24)",
+                      borderRadius: "24px",
+                      padding: "12px 16px",
+                      fontSize: "calc(13px*var(--app-text-scale,1))",
+                      fontWeight: "bold",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <Gift size={15} />
+                    送TA
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => addToCart(selectedProduct)}
+                    style={{
+                      background: selectedProductRecentlyAdded ? "#16a34a" : "#222",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: "24px",
+                      padding: "12px 20px",
+                      fontSize: "calc(13px*var(--app-text-scale,1))",
+                      fontWeight: "bold",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      minWidth: "118px",
+                      justifyContent: "center",
+                      transform: selectedProductRecentlyAdded ? "scale(1.03)" : "scale(1)",
+                      transition: "background 160ms ease, transform 180ms ease",
+                    }}
+                  >
+                    {selectedProductRecentlyAdded ? <Check size={16} strokeWidth={3} /> : <ShoppingCart size={16} />}
+                    {selectedProductRecentlyAdded ? "Added" : cartIds.has(selectedProduct.id) ? "Add Again" : "Add to Cart"}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -1638,6 +1776,14 @@ export function ShoppingApp({ onClose, visible = true, onIdle, onBusyChange }: S
                         : activeOrder.paymentCardLabel ?? "未记录付款方式"}
                   </span>
                 </div>
+                {activeOrder.giftRecipientName ? (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: "8px" }}>
+                    <span style={{ fontSize: "calc(12px*var(--app-text-scale,1))", color: "#999" }}>收礼对象</span>
+                    <span style={{ fontSize: "calc(12px*var(--app-text-scale,1))", color: "#be185d", fontWeight: 600, textAlign: "right" }}>
+                      🎁 {activeOrder.giftRecipientName}（{activeOrder.giftAutoSentAt ? "已送达触发回应" : "到货后自动送出"}）
+                    </span>
+                  </div>
+                ) : null}
               </div>
 
               {activeOrderShipping?.timeline.length ? (
@@ -2047,6 +2193,209 @@ export function ShoppingApp({ onClose, visible = true, onIdle, onBusyChange }: S
                 setPaymentRequestError(null);
               }} style={{ flex: 1, border: "1px solid #eee", background: "#fff", color: "#555", borderRadius: "18px", padding: "12px 0", fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 700 }}>取消</button>
               <button type="button" disabled={!selectedPaymentRequestTargetId} onClick={sendPaymentRequest} style={{ flex: 1.4, border: "none", background: selectedPaymentRequestTargetId ? "#ff6b00" : "#eee", color: selectedPaymentRequestTargetId ? "#fff" : "#aaa", borderRadius: "18px", padding: "12px 0", fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 800 }}>发送请求</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {giftCheckoutOpen && (
+        <div className="cp-shopping-translation-overlay" role="presentation" onClick={() => {
+          setGiftCheckoutOpen(false);
+          setGiftCheckoutError(null);
+        }}>
+          <div
+            className="cp-shopping-translation-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label="买给TA当礼物"
+            onClick={event => event.stopPropagation()}
+            style={{ maxHeight: "min(84vh, 640px)", overflow: "hidden", display: "flex", flexDirection: "column" }}
+          >
+            <div className="cp-shopping-translation-head" style={{ flexShrink: 0 }}>
+              <span>🎁 买给TA当礼物</span>
+              <button type="button" onClick={() => {
+                setGiftCheckoutOpen(false);
+                setGiftCheckoutError(null);
+              }}>Close</button>
+            </div>
+
+            <div style={{ background: "#fdf2f8", border: "1px solid rgba(236,72,153,0.18)", borderRadius: "18px", padding: "14px 16px", marginBottom: "12px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexShrink: 0 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "3px", minWidth: 0 }}>
+                <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "#be185d", fontWeight: 700 }}>礼物金额（共 {giftCheckoutItems.length} 件）</span>
+                <strong style={{ fontSize: "calc(22px*var(--app-text-scale,1))", color: "#222", lineHeight: 1 }}>{formatShoppingAmount(giftTotals.totalPayment)}</strong>
+              </div>
+              <Gift size={24} color="#db2777" />
+            </div>
+
+            <div style={{ overflowY: "auto", paddingRight: "2px", flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column", gap: "12px" }}>
+              <div>
+                <span style={{ display: "block", fontSize: "calc(12px*var(--app-text-scale,1))", fontWeight: 700, color: "#333", marginBottom: "8px" }}>1. 选择收礼角色</span>
+                {giftTargets.length === 0 ? (
+                  <div className="cp-shopping-status cp-empty-copy" style={{ minHeight: "80px" }}>
+                    <p>暂无可选择的角色</p>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: "8px", overflowX: "auto", paddingBottom: "4px" }}>
+                    {giftTargets.map(target => {
+                      const active = selectedGiftTargetId === target.id;
+                      return (
+                        <button
+                          key={target.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedGiftTargetId(target.id);
+                            setGiftCheckoutError(null);
+                          }}
+                          style={{
+                            flexShrink: 0,
+                            border: active ? "2px solid #db2777" : "1px solid #eee",
+                            background: active ? "#fdf2f8" : "#fff",
+                            borderRadius: "16px",
+                            padding: "10px 12px",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                            textAlign: "left",
+                          }}
+                        >
+                          <div style={{ width: "30px", height: "30px", borderRadius: "10px", background: active ? "#db2777" : "#f4f4f5", color: active ? "#fff" : "#555", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, overflow: "hidden" }}>
+                            {target.avatar ? (
+                              <img src={target.avatar} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                            ) : (
+                              <span style={{ fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 800 }}>{target.name.slice(0, 1)}</span>
+                            )}
+                          </div>
+                          <strong style={{ fontSize: "calc(12.5px*var(--app-text-scale,1))", color: active ? "#be185d" : "#222" }}>{target.name}</strong>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <span style={{ display: "block", fontSize: "calc(12px*var(--app-text-scale,1))", fontWeight: 700, color: "#333", marginBottom: "8px" }}>2. 送达方式</span>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setGiftDeliverImmediately(true)}
+                    style={{
+                      border: giftDeliverImmediately ? "2px solid #db2777" : "1px solid #eee",
+                      background: giftDeliverImmediately ? "#fdf2f8" : "#fff",
+                      borderRadius: "14px",
+                      padding: "10px 12px",
+                      textAlign: "left",
+                    }}
+                  >
+                    <strong style={{ display: "block", fontSize: "calc(12.5px*var(--app-text-scale,1))", color: giftDeliverImmediately ? "#be185d" : "#222" }}>⚡ 立即闪送给TA</strong>
+                    <span style={{ display: "block", fontSize: "calc(11px*var(--app-text-scale,1))", color: "#888", marginTop: "2px" }}>下单即签收，TA收到后立刻找你私聊</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGiftDeliverImmediately(false)}
+                    style={{
+                      border: !giftDeliverImmediately ? "2px solid #db2777" : "1px solid #eee",
+                      background: !giftDeliverImmediately ? "#fdf2f8" : "#fff",
+                      borderRadius: "14px",
+                      padding: "10px 12px",
+                      textAlign: "left",
+                    }}
+                  >
+                    <strong style={{ display: "block", fontSize: "calc(12.5px*var(--app-text-scale,1))", color: !giftDeliverImmediately ? "#be185d" : "#222" }}>🚚 正常物流送达</strong>
+                    <span style={{ display: "block", fontSize: "calc(11px*var(--app-text-scale,1))", color: "#888", marginTop: "2px" }}>按物流时间到货后自动送给TA并触发私聊</span>
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <span style={{ display: "block", fontSize: "calc(12px*var(--app-text-scale,1))", fontWeight: 700, color: "#333", marginBottom: "8px" }}>3. 选择付款方式</span>
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {[
+                    {
+                      id: WALLET_BALANCE_ACCOUNT_ID,
+                      title: "余额支付",
+                      description: "红包、转账默认使用余额",
+                      balance: getWalletBalance(walletState),
+                      icon: <CreditCard size={18} />,
+                    },
+                    ...walletState.cards.map(card => ({
+                      id: card.id,
+                      title: card.title,
+                      description: `${getWalletCardDisplayNumber(card.maskedNumber)} · 银行卡`,
+                      balance: card.balance,
+                      icon: <WalletCards size={18} />,
+                    })),
+                  ].map(source => {
+                    const active = selectedPaymentSource?.id === source.id;
+                    const insufficient = source.balance < giftTotals.totalPayment;
+                    return (
+                      <button
+                        key={source.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedPaymentSourceId(source.id);
+                          setGiftCheckoutError(null);
+                        }}
+                        style={{
+                          width: "100%",
+                          border: active ? "2px solid #db2777" : "1px solid #eee",
+                          background: "#fff",
+                          borderRadius: "14px",
+                          padding: "10px 12px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "10px",
+                          textAlign: "left",
+                        }}
+                      >
+                        <div style={{ width: "36px", height: "36px", borderRadius: "12px", background: active ? "#db2777" : "#f4f4f5", color: active ? "#fff" : "#555", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          {source.icon}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "2px" }}>
+                          <strong style={{ fontSize: "calc(12.5px*var(--app-text-scale,1))", color: "#222" }}>{source.title}</strong>
+                          <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "#888" }}>{source.description} · 可用 {formatWalletAmount(source.balance)}</span>
+                        </div>
+                        {insufficient ? (
+                          <span style={{ fontSize: "calc(11px*var(--app-text-scale,1))", color: "#ef4444", fontWeight: 700, whiteSpace: "nowrap" }}>余额不足</span>
+                        ) : active ? (
+                          <Check size={16} color="#db2777" strokeWidth={3} />
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {giftCheckoutError || (selectedPaymentSource && !selectedPaymentSourceCanPayGift) ? (
+              <div style={{ marginTop: "10px", borderRadius: "14px", background: "#fef2f2", color: "#b91c1c", padding: "10px 12px", display: "flex", gap: "8px", alignItems: "flex-start", fontSize: "calc(12px*var(--app-text-scale,1))", lineHeight: 1.4, flexShrink: 0 }}>
+                <AlertCircle size={15} style={{ flexShrink: 0, marginTop: "1px" }} />
+                <span>{giftCheckoutError ?? "该付款方式余额不足，无法完成付款。"}</span>
+              </div>
+            ) : null}
+
+            <div style={{ display: "flex", gap: "10px", justifyContent: "space-between", marginTop: "12px", flexShrink: 0 }}>
+              <button type="button" onClick={() => {
+                setGiftCheckoutOpen(false);
+                setGiftCheckoutError(null);
+              }} style={{ flex: 1, border: "1px solid #eee", background: "#fff", color: "#555", borderRadius: "18px", padding: "12px 0", fontSize: "calc(13px*var(--app-text-scale,1))", fontWeight: 700 }}>取消</button>
+              <button
+                type="button"
+                disabled={!selectedGiftTargetId || !selectedPaymentSource || !selectedPaymentSourceCanPayGift}
+                onClick={handleGiftCheckout}
+                style={{
+                  flex: 1.5,
+                  border: "none",
+                  background: selectedGiftTargetId && selectedPaymentSource && selectedPaymentSourceCanPayGift ? "#db2777" : "#eee",
+                  color: selectedGiftTargetId && selectedPaymentSource && selectedPaymentSourceCanPayGift ? "#fff" : "#aaa",
+                  borderRadius: "18px",
+                  padding: "12px 0",
+                  fontSize: "calc(13px*var(--app-text-scale,1))",
+                  fontWeight: 800,
+                }}
+              >
+                付款并送给TA
+              </button>
             </div>
           </div>
         </div>
