@@ -38,6 +38,7 @@ import { loadCharacters } from "./character-storage";
 import { bgSetInterval, bgSetTimeout } from "./bg-timer";
 import { dispatchChatMessageNotice } from "./chat-notification-events";
 import { settleShoppingPaymentRequest } from "./shopping-payment-request";
+import { processDueGiftOrders } from "./shopping-gift-utils";
 import {
     createPendingChatGeneratedImageData,
     generateAndApplyChatGeneratedImage,
@@ -367,6 +368,10 @@ function pollSchedules() {
         pollTimedWakeSchedules(now);
         pollMenstrualPeriodCare(now);
         pollIdleReconnect(now);
+        const dueGiftSessions = processDueGiftOrders(now);
+        for (const giftSessionId of dueGiftSessions) {
+            void requestBackgroundChatReply(giftSessionId);
+        }
     } catch (e) {
         console.error("[FollowUp] pollSchedules error:", e);
     }

@@ -149,6 +149,7 @@ export type ChatMessage = {
         giftName?: string;       // 礼物商品名
         giftMerchantLabel?: string; // 礼物来源商家
         giftPriceLabel?: string; // 礼物商品价格
+        giftDetail?: string;     // 礼物商品详情描述
         giftPreviewIcon?: string;// 礼物展示图标
         giftTone?: "ivory" | "mist" | "blush" | "graphite";
         giftDeliveredAt?: string;// 到货时间

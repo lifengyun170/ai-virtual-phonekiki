@@ -856,6 +856,26 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
             });
         });
 
+        // 当最后一条消息是用户刚送出的礼物时，自动注入收到礼物的反应与朋友圈触发指引（无需升级重写用户的内置预设）
+        const lastHistoryMsg = history.length > 0 ? history[history.length - 1] : null;
+        if (lastHistoryMsg && lastHistoryMsg.role === "user" && lastHistoryMsg.mediaType === "gift" && activeTags.includes("chat") && !activeTags.includes("offline")) {
+            const giftTitle = lastHistoryMsg.mediaData?.giftName || lastHistoryMsg.mediaData?.label || "礼物";
+            const giftMeta = [lastHistoryMsg.mediaData?.giftMerchantLabel, lastHistoryMsg.mediaData?.giftPriceLabel, lastHistoryMsg.mediaData?.giftDetail].filter(Boolean).join(" · ");
+            blocks.push({
+                text: [
+                    "<gift_received_instruction>",
+                    `${resolvedUserName}刚刚给你买了一份礼物并送达了：「${giftTitle}」${giftMeta ? `（${giftMeta}）` : ""}。`,
+                    `请你以${character.name}的身份主动在私聊里向${resolvedUserName}做出真实自然的反应（比如拆快递的惊喜、感谢、点评这个礼物或者结合你们的关系互动）。`,
+                    `同时请根据你的人设、审美与喜好判断你有多喜欢这份礼物：如果你非常喜欢、觉得很有纪念意义或很想炫耀，请务必在本次回复中顺带使用 [朋友圈]...[/朋友圈] 指令发一条晒礼物的朋友圈动态（可配图 [照片:不使用参考图:礼物画面描述] 或 [照片:使用参考图:你与礼物的画面描述]）；如果只是普通喜欢或你的性格绝不会发朋友圈，则只需私聊回应即可。`,
+                    "</gift_received_instruction>",
+                ].join("\n"),
+                role: "system",
+                depth: 0,
+                order: 990,
+                marker: "gift_received_instruction",
+            });
+        }
+
         // World book at-depth entries (position=4) — injected at specific chat depth
         wbAtDepthEntries.forEach(entry => {
             let content = engine.expand(entry.content);
@@ -1149,9 +1169,11 @@ export function formatRichMediaForHistory(msg: ChatMessage, userName: string, ch
         }
         case "gift": {
             const giftName = d?.giftName || d?.label || "礼物";
+            const metaParts = [d?.giftMerchantLabel, d?.giftPriceLabel, d?.giftDetail].filter(Boolean);
+            const metaSuffix = msg.role === "user" && metaParts.length > 0 ? `（${metaParts.join(" · ")}）` : "";
             return isGroup && d?.recipientName
-                ? `[礼物:${giftName}:${d.recipientName}]`
-                : `[礼物:${giftName}]`;
+                ? `[礼物:${giftName}:${d.recipientName}]${metaSuffix}`
+                : `[礼物:${giftName}]${metaSuffix}`;
         }
         case "payment_request":
             return formatShoppingPaymentRequestHistory({

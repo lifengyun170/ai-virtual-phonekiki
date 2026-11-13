@@ -151,6 +151,9 @@ function normalizeOrder(value: unknown): ShoppingState["orders"][number] | null 
     paymentRequestedAt: cleanText(record.paymentRequestedAt, 80) || undefined,
     paymentDeclinedAt: cleanText(record.paymentDeclinedAt, 80) || undefined,
     characterPaidAt: cleanText(record.characterPaidAt, 80) || undefined,
+    giftRecipientId: cleanText(record.giftRecipientId, 120) || undefined,
+    giftRecipientName: cleanText(record.giftRecipientName, 120) || undefined,
+    giftAutoSentAt: cleanText(record.giftAutoSentAt, 80) || undefined,
   };
 }
 

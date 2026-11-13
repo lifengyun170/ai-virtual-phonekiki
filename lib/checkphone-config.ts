@@ -318,6 +318,9 @@ export type CheckPhoneShoppingOrder = {
   paymentRequestedAt?: string;
   paymentDeclinedAt?: string;
   characterPaidAt?: string;
+  giftRecipientId?: string;
+  giftRecipientName?: string;
+  giftAutoSentAt?: string;
 };
 
 export type CheckPhoneShoppingPayload = {
