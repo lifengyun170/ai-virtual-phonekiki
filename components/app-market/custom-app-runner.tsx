@@ -351,6 +351,12 @@ html, body { min-height: 100%; }
       getAssetUrl: function(path){ return request('app.getAssetUrl', { path: path }); },
       close: function(){ return request('app.close'); }
     },
+    /* RU_YUE_BRIDGE_V1 */
+    outing: {
+      context: function(payload){ return request('outing.context', payload || {}); },
+      generate: function(payload){ return request('outing.generate', payload || {}); },
+      complete: function(payload){ return request('outing.complete', payload || {}); }
+    },
     db: {
       create: function(collection, data){ return request('db.create', { collection: collection, data: data }); },
       update: function(collection, id, patch){ return request('db.update', { collection: collection, id: id, patch: patch }); },
@@ -1065,6 +1071,13 @@ export function CustomAppRunner({
     }
     if (bridgeActionNeedsChatStorage(action)) {
       await hydrateChatStorage();
+    }
+
+    if (action.startsWith("outing.")) {
+      requirePermission("app.data.read");
+      requirePermission("characters.read");
+      const { handleOutingAction } = await import("@/lib/outing-support");
+      return handleOutingAction(app, action, record);
     }
 
     if (action === "app.getManifest") return app.manifest;
