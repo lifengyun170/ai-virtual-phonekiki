@@ -1681,3 +1681,58 @@ export function triggerCompletedOutingMoment(characterId: string, eventKey: stri
     void job.finally(() => completedOutingMomentJobs.delete(eventKey)).catch(() => {});
     return job;
 }
+
+// RU_YUE_NATIVE_MOMENT_V11
+const completedOutingMomentJobs = new Map<string, Promise<{ outcome: string; postId?: string }>>();
+/** 使用原生朋友圈的预设、人物、世界书与记忆；App 仅提供已完成事件的事实。 */
+export function triggerCompletedOutingMoment(characterId: string, eventKey: string, eventMemory: string): Promise<{ outcome: string; postId?: string }> {
+    const existingJob = completedOutingMomentJobs.get(eventKey);
+    if (existingJob) return existingJob;
+    const job = (async () => {
+        const { kvGet, kvSetAsync } = await import('./kv-db');
+        const { hydrateMomentsStorage } = await import('./moments-storage');
+        const { momentsDb } = await import('./moments-db');
+        await hydrateMomentsStorage();
+        const ledgerKey = `ruyue_native_moment:${characterId}:${eventKey}`;
+        const saved = kvGet(ledgerKey);
+        let ledger: { phase: string; content?: string; photoDescription?: string; photoUseReferenceImage?: boolean; postId?: string; outcome?: string } | null = null;
+        if (saved) { try { ledger = JSON.parse(saved); } catch { throw new Error('朋友圈触发记录损坏，请先核对记录'); } }
+        if (ledger?.phase === 'done') return { outcome: ledger.outcome || 'skipped', postId: ledger.postId };
+        if (!ledger) {
+            const resolved = await resolveAssemblerInput(characterId, 'post');
+            if (!resolved?.apiConfig) throw new Error('该男主没有可用的原生朋友圈模型配置');
+            const { input, apiConfig, preset, character } = resolved;
+            const messages = assemblePromptPayload(input);
+            messages.push({ role: 'user', content: `刚完整经历以下事件（已保存为记忆）：\n${eventMemory}\n是否想发朋友圈由你根据此刻心情、事件意义、人物习惯和原有预设、关系公开边界自行决定。无需每次发布。若不想发，只输出[不发布]。若想发，按原有朋友圈规则输出[朋友圈]正文[/朋友圈]，可带原有照片标记；不要说明幕后触发，不代替用户发帖。`, _debugMeta: { marker: 'completed_outing_moment_trigger' } });
+            const raw = await callLLM(apiConfig, preset, messages, character.name, input.regexes, input.appTags, input.userIdentity?.name);
+            if (!raw?.trim()) throw new Error('朋友圈判断未返回结果，可以重试');
+            const cleaned = parseActionTags(raw).cleanText.trim();
+            if (cleaned === '[不发布]') {
+                await kvSetAsync(ledgerKey, JSON.stringify({ phase: 'done', outcome: 'skipped' }));
+                return { outcome: 'skipped' };
+            }
+            if (!/\[朋友圈\][\s\S]*\[\/朋友圈\]/.test(cleaned)) throw new Error('朋友圈未返回明确的发布或不发布结果，可以重试');
+            const parsed = parseMomentPostResponse(cleaned);
+            if (!parsed) throw new Error('朋友圈内容为空，可以重试');
+            ledger = { phase: 'prepared', ...parsed };
+            await kvSetAsync(ledgerKey, JSON.stringify(ledger));
+        }
+        const duplicate = loadMomentPosts().find(p => p.authorType === 'character' && p.authorId === characterId && p.content === ledger!.content);
+        const post = duplicate ?? addMomentPost({ authorType: 'character', authorId: characterId, content: ledger.content || '', photoDescription: ledger.photoDescription, photoUseReferenceImage: ledger.photoUseReferenceImage, photoGenerationStatus: ledger.photoDescription ? 'pending' : undefined, visibility: loadChatContacts().map(c => c.characterId) });
+        if (!post) throw new Error('朋友圈保存未确认，可以重试');
+        await momentsDb.posts.put(post);
+        await kvSetAsync(ledgerKey, JSON.stringify({ phase: 'done', outcome: 'posted', postId: post.id }));
+        if (!duplicate && ledger.photoDescription) attachMomentPhotoInBackground(post.id, ledger.photoDescription, characterId, ledger.photoUseReferenceImage === true);
+        dispatchMomentsUpdated();
+        if (!duplicate) {
+            incrementEventCounter(characterId);
+            maybeRunSummarization(characterId, '').catch(err => console.warn('[Outing] summary failed', err));
+            const character = loadCharacters().find(c => c.id === characterId);
+            if (character) generateNPCReactions(post, character);
+        }
+        return { outcome: 'posted', postId: post.id };
+    })();
+    completedOutingMomentJobs.set(eventKey, job);
+    void job.finally(() => completedOutingMomentJobs.delete(eventKey)).catch(() => {});
+    return job;
+}
