@@ -28,6 +28,7 @@ import { GeneratedImageErrorDialog } from "./generated-image-error-dialog";
 import { ScanPayCard } from "@/components/chat/scan-pay-card";
 import { payWithWalletBalance } from "@/lib/wallet-storage";
 import { formatShoppingPaymentRequestHistory } from "@/lib/shopping-payment-request";
+import { loadInstalledCustomApps } from "@/lib/custom-app-storage";
 import { toCustomAppIconId } from "@/lib/custom-app-types";
 import { ChatPluginSlot } from "@/components/chat/chat-plugin-slot";
 import { CHAT_PLUGIN_SLOTS_CHANGED_EVENT, getChatPluginRuntime } from "@/lib/chat-plugin-runtime";
@@ -790,7 +791,7 @@ function AppCardBubble({ msg, characterId, characterName }: { msg: ChatMessage; 
         ? (layout.body || d?.appCardBody || "")
         : (layout.body || d?.appCardBody || d?.appCardSummary || msg.content);
     const toneClass = d?.appCardTone ? ` tone-${String(d.appCardTone).replace(/[^a-z0-9_-]/gi, "")}` : "";
-    const cardOpenDisabled = layout.openDisabled || (layout.actions.length > 0 && layout.actions.every(action => action.disabled));
+    const cardOpenDisabled = Boolean(d?.appId && loadInstalledCustomApps().some(app => app.id === d.appId && app.manifest.id === "sabina.frequency")) /* FREQUENCY_NO_APP_OPEN_V13 */ || layout.openDisabled || (layout.actions.length > 0 && layout.actions.every(action => action.disabled));
     const style = {
         ...(layout.accentColor ? { "--chat-app-card-accent": layout.accentColor } : {}),
         ...(layout.background ? { "--chat-app-card-bg": layout.background } : {}),
