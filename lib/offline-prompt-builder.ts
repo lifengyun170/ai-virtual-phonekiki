@@ -10,10 +10,11 @@ import type { ChatOfflineTurn } from "./chat-offline-storage";
 function hasSummaryXmlTag(rawText: string, summaryTag: string): boolean {
     const tags = Array.from(new Set([summaryTag.trim(), "summary"].filter(Boolean)));
     return tags.some((tag) => {
-        const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\export function formatOfflineTurnXml(turn: ChatOfflineTurn): string {
-    if (turn.rawText?.trim()) return turn.rawText.trim();
-    const summaryTag = turn.summaryTag?.trim() || "summary";");
-        return new RegExp(`<${escaped}>[\\s\\S]*?</${escaped}>`, "i").test(rawText);
+        const lowerRaw = rawText.toLowerCase();
+        const lowerTag = tag.toLowerCase();
+        const openIdx = lowerRaw.indexOf(`<${lowerTag}>`);
+        const closeIdx = lowerRaw.indexOf(`</${lowerTag}>`);
+        return openIdx !== -1 && closeIdx > openIdx;
     });
 }
 
