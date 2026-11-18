@@ -1109,6 +1109,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
     const [activeOfflineTarget, setActiveOfflineTarget] = useState<OfflineActionTarget | null>(null);
     const [editingOfflineTarget, setEditingOfflineTarget] = useState<OfflineActionTarget | null>(null);
     const [editingOfflineContent, setEditingOfflineContent] = useState("");
+    const [editingOfflineSummary, setEditingOfflineSummary] = useState("");
     const [regexRevision, setRegexRevision] = useState(0);
     // Whether there are unsent user messages waiting for AI generation
     const [pendingGenerate, setPendingGenerate] = useState(false);
@@ -1735,6 +1736,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
         setShowConfirmMultiDelete(false);
         setEditingOfflineTarget(null);
         setEditingOfflineContent("");
+        setEditingOfflineSummary("");
         setOfflineTurns(loadChatOfflineTurns(session.id));
 
         // Prewarm sticker cache for all relevant characters, then load messages
@@ -4095,6 +4097,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
         setActiveOfflineTarget(null);
         setEditingOfflineTarget({ turnId: turn.id, role });
         setEditingOfflineContent(role === "user" ? turn.userContent : formatOfflineTurnXml(turn));
+        setEditingOfflineSummary(role === "assistant" ? turn.summary : "");
     };
 
     const toggleOfflineMode = () => {
@@ -4245,6 +4248,25 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
         }
 
         const nextContent = applyEditTextRegex(content, 2, true);
+        const effectiveSummaryTag = (turn.summaryTag || "summary").trim() || "summary";
+        const parsed = parseOfflineResponse(nextContent, effectiveSummaryTag);
+        const assistantContent = parsed.content.trim() || parsed.rawText.trim();
+        if (!assistantContent) {
+            showChatToast("没有解析到线下正文");
+            return;
+        }
+        const manualSummary = editingOfflineSummary.trim();
+        const summaryChangedInBox = manualSummary !== turn.summary.trim();
+        const finalSummary = summaryChangedInBox
+            ? manualSummary
+            : (parsed.summary.trim() || manualSummary);
+        if (!finalSummary) showChatToast(`未提取到 <${parsed.summaryTag}> 摘要`);
+        // 同步更新 rawText 中的摘要标签，防止下次编辑或构建上下文时丢失摘要
+        const syncSummaryIntoRawText = (raw: string, tag: string, summaryVal: string): string => {
+            const trimmedRaw = raw.trim();
+            const candidateTags = Array.from(new Set([tag, "summary"].filter(Boolean)));
+            for (const candidate of candidateTags) {
+                const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\        const nextContent = applyEditTextRegex(content, 2, true);
         const parsed = parseOfflineResponse(nextContent, turn.summaryTag || "summary");
         const assistantContent = parsed.content.trim() || parsed.rawText.trim();
         if (!assistantContent) {
@@ -4267,7 +4289,34 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
         });
         if (updated) setOfflineTurns(prev => prev.map(item => item.id === updated.id ? updated : item));
         setEditingOfflineTarget(null);
+        setEditingOfflineContent("");");
+                const re = new RegExp(`<${escaped}>[\\s\\S]*?</${escaped}>`, "i");
+                if (re.test(trimmedRaw)) {
+                    return summaryVal
+                        ? trimmedRaw.replace(re, `<${tag}>\n${summaryVal}\n</${tag}>`)
+                        : trimmedRaw.replace(re, "").trim();
+                }
+            }
+            return summaryVal ? `${trimmedRaw}\n<${tag}>\n${summaryVal}\n</${tag}>`.trim() : trimmedRaw;
+        };
+        const finalRawText = syncSummaryIntoRawText(parsed.rawText, parsed.summaryTag, finalSummary);
+        // 思维链：parseOfflineResponse 已回归官方两参数（不再提取 thinking）。
+        // 若该条原本带标签思维链（预设开启线下标签解析），按原标签从编辑后的正文重新提取，否则保持无。
+        const editedThinking = turn.thinkingText !== undefined
+            ? (extractThinkingTag(nextContent, turn.thinkingTag) || undefined)
+            : undefined;
+        const updated = updateChatOfflineTurn(session.id, turn.id, {
+            assistantContent,
+            summary: finalSummary,
+            summaryTag: parsed.summaryTag,
+            rawText: finalRawText,
+            thinkingText: editedThinking,
+            thinkingTag: editedThinking !== undefined ? turn.thinkingTag : undefined,
+        });
+        if (updated) setOfflineTurns(prev => prev.map(item => item.id === updated.id ? updated : item));
+        setEditingOfflineTarget(null);
         setEditingOfflineContent("");
+        setEditingOfflineSummary("");
     };
 
     const handleOfflineDeleteTurn = (turnId: string) => {
@@ -6568,7 +6617,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
             )}
 
             {editingOfflineTarget && (
-                <div className="chat-html-overlay" onClick={() => { setEditingOfflineTarget(null); setEditingOfflineContent(""); }}>
+                <div className="chat-html-overlay" onClick={() => { setEditingOfflineTarget(null); setEditingOfflineContent(""); setEditingOfflineSummary(""); }}>
                     <div
                         className="g-card w-[min(84vw,420px)] max-h-[78vh] p-4 flex flex-col gap-3"
                         onClick={(e) => e.stopPropagation()}
@@ -6581,11 +6630,11 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                                 <span className="menu-desc !mt-0">
                                     {editingOfflineTarget.role === "user"
                                         ? "保存后会更新这一轮线下历史"
-                                        : "保存后会重新解析 content 和摘要，并更新短期记忆事件流"}
+                                        : "可同时编辑正文与摘要，保存后自动同步短期记忆事件流"}
                                 </span>
                             </div>
                             <button
-                                onClick={() => { setEditingOfflineTarget(null); setEditingOfflineContent(""); }}
+                                onClick={() => { setEditingOfflineTarget(null); setEditingOfflineContent(""); setEditingOfflineSummary(""); }}
                                 className="ui-bare-btn text-[var(--c-icon)] ts-18 leading-none"
                                 type="button"
                             >✕</button>
@@ -6594,11 +6643,22 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                             autoFocus
                             value={editingOfflineContent}
                             onChange={(e) => setEditingOfflineContent(e.target.value)}
-                            className="w-full min-h-[220px] max-h-[52vh] resize-none rounded-2xl border border-[var(--c-border)] bg-[var(--c-input)] px-4 py-3 ts-14 text-[var(--c-text)] outline-none"
+                            className="w-full min-h-[180px] max-h-[40vh] resize-none rounded-2xl border border-[var(--c-border)] bg-[var(--c-input)] px-4 py-3 ts-14 text-[var(--c-text)] outline-none"
                         />
+                        {editingOfflineTarget.role === "assistant" && (
+                            <div className="flex flex-col gap-1">
+                                <span className="menu-desc !mt-0">摘要（summary）</span>
+                                <textarea
+                                    value={editingOfflineSummary}
+                                    onChange={(e) => setEditingOfflineSummary(e.target.value)}
+                                    placeholder="填写或修改本轮线下对话摘要..."
+                                    className="w-full min-h-[72px] max-h-[16vh] resize-none rounded-2xl border border-[var(--c-border)] bg-[var(--c-input)] px-4 py-2.5 ts-13 text-[var(--c-text)] outline-none"
+                                />
+                            </div>
+                        )}
                         <div className="flex justify-end gap-2">
                             <button
-                                onClick={() => { setEditingOfflineTarget(null); setEditingOfflineContent(""); }}
+                                onClick={() => { setEditingOfflineTarget(null); setEditingOfflineContent(""); setEditingOfflineSummary(""); }}
                                 className="ui-btn ui-btn-outline"
                                 type="button"
                             >取消</button>

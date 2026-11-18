@@ -7,9 +7,25 @@
 import type { ChatSession, ChatMessage } from "./chat-storage";
 import type { ChatOfflineTurn } from "./chat-offline-storage";
 
-export function formatOfflineTurnXml(turn: ChatOfflineTurn): string {
+function hasSummaryXmlTag(rawText: string, summaryTag: string): boolean {
+    const tags = Array.from(new Set([summaryTag.trim(), "summary"].filter(Boolean)));
+    return tags.some((tag) => {
+        const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\export function formatOfflineTurnXml(turn: ChatOfflineTurn): string {
     if (turn.rawText?.trim()) return turn.rawText.trim();
+    const summaryTag = turn.summaryTag?.trim() || "summary";");
+        return new RegExp(`<${escaped}>[\\s\\S]*?</${escaped}>`, "i").test(rawText);
+    });
+}
+
+export function formatOfflineTurnXml(turn: ChatOfflineTurn): string {
     const summaryTag = turn.summaryTag?.trim() || "summary";
+    if (turn.rawText?.trim()) {
+        const raw = turn.rawText.trim();
+        if (turn.summary?.trim() && !hasSummaryXmlTag(raw, summaryTag)) {
+            return `${raw}\n<${summaryTag}>\n${turn.summary.trim()}\n</${summaryTag}>`;
+        }
+        return raw;
+    }
     // rawText 缺失（旧数据）时重建完整 XML：思维链（thinkingText）存在则按原标签拼回，
     // 保证历史上下文里保留这一轮的思考内容
     const thinkingTag = turn.thinkingTag?.trim() || "thinking";

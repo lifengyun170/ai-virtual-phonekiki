@@ -2127,7 +2127,9 @@ export async function generateOfflineChatCompletion(
         const retryRaw = stripPresetTexts(await sendLLMRequest(config, preset, retryMessages, regexes, meta, { ...requestOptions, onReasoning: undefined }), preset);
         const retried = parseOfflineResponse(retryRaw, summaryTag);
         if (retried.summary.trim()) {
-            parsed = { ...parsed, summary: retried.summary.trim() };
+            const nextSummary = retried.summary.trim();
+            const nextRawText = `${parsed.rawText.trim()}\n<${summaryTag}>\n${nextSummary}\n</${summaryTag}>`.trim();
+            parsed = { ...parsed, summary: nextSummary, rawText: nextRawText };
             break;
         }
     }
