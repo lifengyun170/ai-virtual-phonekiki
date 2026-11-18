@@ -294,11 +294,19 @@ type GatheringMomentRequest = { eventId: string; context: string; signal: AbortS
 export async function requestGatheringMoment(characterId: string, event: GatheringMomentRequest): Promise<"done" | "busy"> {
     const existingPost = loadMomentPosts().find(p => p.gatheringEventId === event.eventId && p.authorId === characterId);
     if (existingPost) {
+        const allContactIds = loadChatContacts().map(c => c.characterId);
+        if (existingPost.visibility.length <= 1 && allContactIds.length > 1) {
+            existingPost.visibility = allContactIds;
+            saveMomentPosts(loadMomentPosts());
+        }
         const hasReactions = existingPost.likes.length > 0 || loadMomentComments(existingPost.id).length > 0;
-        const hasPending = loadPendingReactions().some(r => r.postId === existingPost.id && r.type === "npc_reaction");
+        const hasPending = loadPendingReactions().some(r => r.postId === existingPost.id);
         if (!hasReactions && !hasPending) {
             const character = loadCharacters().find(c => c.id === characterId);
-            if (character) generateNPCReactions(existingPost, character);
+            if (character) {
+                generateNPCReactions(existingPost, character);
+                triggerAIReactionsForPost(existingPost, characterId);
+            }
         }
         return "done";
     }
@@ -384,13 +392,13 @@ async function triggerAIPost(characterId: string, event?: GatheringMomentRequest
         }
 
         const contacts = loadChatContacts();
-        const visibility = event ? [characterId] : contacts.map(c => c.characterId);
+        const visibility = contacts.map(c => c.characterId);
 
         // 先入库再生图：帖子立即可见，生图慢/超时/页面被杀都不会丢帖
         const post = addMomentPost({
             authorType: "character",
             authorId: characterId,
-            ...(event ? { gatheringEventId: event.eventId, lineCharacterId: characterId } : {}),
+            ...(event ? { gatheringEventId: event.eventId } : {}),
             content: parsed.content,
             photoDescription: parsed.photoDescription,
             photoUseReferenceImage: parsed.photoUseReferenceImage === true,
@@ -414,8 +422,9 @@ async function triggerAIPost(characterId: string, event?: GatheringMomentRequest
         }
 
         dispatchMomentsUpdated();
-        // Character's post → NPC reactions (not other main characters)
+        // Character's post → NPC reactions + same-world characters reactions
         generateNPCReactions(post, character);
+        if (event) triggerAIReactionsForPost(post, characterId);
 
     } finally {
         isGenerating = false;
@@ -449,7 +458,7 @@ async function buildNPCReactionMessages(
     post: MomentPost,
     character: Character,
 ): Promise<{ messages: LLMMessage[]; apiConfig: ApiConfig | null; preset: PresetConfig | null; regexes: RegexConfig[]; appTags?: string[]; userName?: string } | null> {
-    const resolved = await resolveAssemblerInput(character.id, "npc", Boolean(post.gatheringEventId || post.lineCharacterId));
+    const resolved = await resolveAssemblerInput(character.id, "npc");
     if (!resolved) return null;
 
     const { input, apiConfig, preset } = resolved;

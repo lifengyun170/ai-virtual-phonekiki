@@ -268,7 +268,6 @@ export function areCharactersInSameWorld(firstCharacterId: string, secondCharact
 }
 
 export function canCharacterSeeMomentPost(post: MomentPost, viewerCharacterId: string): boolean {
-    if (post.lineCharacterId && post.lineCharacterId !== viewerCharacterId) return false;
     if (post.authorType === "user") return post.visibility.includes(viewerCharacterId);
     if (post.authorId === viewerCharacterId) return true;
     return post.visibility.includes(viewerCharacterId) && areCharactersInSameWorld(post.authorId, viewerCharacterId);
@@ -279,7 +278,6 @@ export function isMomentRealCharacterAllowedForViewer(viewerCharacterId: string,
 }
 
 export function isMomentRealCharacterAllowedForPost(post: MomentPost, targetCharacterId: string, anchorCharacterId?: string): boolean {
-    if (post.lineCharacterId) return targetCharacterId === post.lineCharacterId;
     if (post.authorType === "character") {
         return areCharactersInSameWorld(post.authorId, targetCharacterId);
     }
