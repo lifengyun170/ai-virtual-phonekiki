@@ -120,19 +120,26 @@ async function contactOpportunity(e: Gathering, rt: Live): Promise<void> {
 async function settle(e: Gathering, rt: Live): Promise<void> {
     // End is a synchronous state transition BEFORE any network calls.
     // Each native channel receives facts only; they independently decide what to say/publish.
-    try {
-        update(e.id, { momentState: "running" });
-        const result = await requestGatheringMoment(e.characterId, {
-            eventId: e.id, context: context(e), signal: rt.controller.signal,
-            validate: text => validateGatheringOutput(e.sessionId, text, rt.controller.signal),
-        });
-        if (!isCurrent(e, rt)) return;
-        if (result === "busy") { update(e.id, { momentState: "pending" }); }
-        else update(e.id, { momentState: "done" });
-    } catch (error) {
-        if (isCurrent(e, rt)) update(e.id, { momentState: "error", momentError: message(error) });
+    const currentMomentState = get(e.id)?.momentState ?? e.momentState;
+    if (currentMomentState !== "done" && currentMomentState !== "skipped") {
+        try {
+            update(e.id, { momentState: "running", momentError: undefined });
+            const result = await requestGatheringMoment(e.characterId, {
+                eventId: e.id, context: context(e), signal: rt.controller.signal,
+                validate: text => validateGatheringOutput(e.sessionId, text, rt.controller.signal, "moments"),
+            });
+            if (!isCurrent(e, rt)) return;
+            if (result === "busy") { update(e.id, { momentState: "pending" }); }
+            else update(e.id, { momentState: "done", momentError: undefined });
+        } catch (error) {
+            if (isCurrent(e, rt)) update(e.id, { momentState: "error", momentError: message(error) });
+        }
     }
-    if (isCurrent(e, rt) && !rt.contactPlanned) await contactOpportunity(get(e.id) || e, rt);
+    const latest = get(e.id) || e;
+    if (isCurrent(e, rt) && !rt.contactPlanned && latest.contactState !== "done" && latest.contactState !== "skipped") {
+        update(e.id, { contactError: undefined });
+        await contactOpportunity(latest, rt);
+    }
 }
 
 async function tick(): Promise<void> {
@@ -240,6 +247,23 @@ export async function handleGatheringRequest(app: InstalledCustomApp, action: st
     if (action === "gathering.retryStory") {
         if (e.status !== "active" || e.storyState !== "error") throw new Error("只有生成失败的进行中聚会可以重试。");
         const rt = live.get(e.id) || runtime(e); if (!rt.busy) void generateStory(e, rt); return get(e.id);
+    }
+    if (action === "gathering.retrySocial") {
+        if (e.status !== "ended" || !e.story || !e.summary) throw new Error("只有已生成完整故事并结束的聚会才能重试社交联动。");
+        const retryContact = ["error", "interrupted"].includes(e.contactState);
+        const retryMoment = ["error", "interrupted"].includes(e.momentState);
+        if (!retryContact && !retryMoment) return e;
+        stopEvent(e.id);
+        const patched = update(e.id, {
+            ...(retryContact ? { contactState: "pending", contactError: undefined } : {}),
+            ...(retryMoment ? { momentState: "pending", momentError: undefined } : {}),
+        })!;
+        const rt = runtime(patched);
+        rt.busy = true;
+        rt.nextAt = Infinity;
+        rt.contactPlanned = !retryContact;
+        void settle(patched, rt).finally(() => { rt.busy = false; });
+        return get(e.id);
     }
     if (action === "gathering.end") {
         if (e.status === "ended") return e; // Idempotent: never repeat memory/social effects.

@@ -5,7 +5,7 @@ const CUSTOM_APP_CREATOR_GUIDE_LINES = [
   "权限 `gathering.manage`：使用原生AI和宿主调度，消耗已配置API额度。",
   "`AiPhone.gathering.status({characterId})` 返回当前角色的聚会；`AiPhone.gathering.recommend({characterId})` 返回推荐。",
   "`AiPhone.gathering.start({characterId,date,location,activity,participants})` 即时开始；`AiPhone.gathering.end({characterId,eventId})` 幂等结束。",
-  "`AiPhone.gathering.retryStory({characterId,eventId})` 仅重试失败的未结束故事。",
+  "`AiPhone.gathering.retryStory({characterId,eventId})` 仅重试失败的未结束故事；`AiPhone.gathering.retrySocial({characterId,eventId})` 重试已结束聚会中失败的私聊或朋友圈决策。",
   "以上接口不接受预写聊天、朋友圈或记忆内容；原生引擎自行生成。所有事件由appId与characterId双重校验。",
   "",
   "## 1. 这是什么",

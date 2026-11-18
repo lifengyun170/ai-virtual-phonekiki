@@ -347,7 +347,8 @@ html, body { min-height: 100%; }
       recommend: function(payload){ return request('gathering.recommend', payload || {}); },
       start: function(payload){ return request('gathering.start', payload || {}); },
       end: function(payload){ return request('gathering.end', payload || {}); },
-      retryStory: function(payload){ return request('gathering.retryStory', payload || {}); }
+      retryStory: function(payload){ return request('gathering.retryStory', payload || {}); },
+      retrySocial: function(payload){ return request('gathering.retrySocial', payload || {}); }
     },
     on: onEvent,
     off: offEvent,
@@ -1087,7 +1088,7 @@ export function CustomAppRunner({
       return handleOutingAction(app, action, record);
     }
 
-    if (action === "gathering.status" || action === "gathering.recommend" || action === "gathering.start" || action === "gathering.end" || action === "gathering.retryStory") {
+    if (action === "gathering.status" || action === "gathering.recommend" || action === "gathering.start" || action === "gathering.end" || action === "gathering.retryStory" || action === "gathering.retrySocial") {
       requirePermission("gathering.manage");
       await Promise.all([hydrateKvDb(), ensureSettingsStorageHydrated(), hydrateChatStorage()]);
       const { handleGatheringRequest } = await import("@/lib/gathering-service");
@@ -1105,7 +1106,7 @@ export function CustomAppRunner({
         events: app.manifest.extensions?.events ?? app.manifest.events ?? [],
         network: app.manifest.network ?? {},
         sdk: {
-          gathering: ["status", "recommend", "start", "end", "retryStory"],
+          gathering: ["status", "recommend", "start", "end", "retryStory", "retrySocial"],
           app: ["getManifest", "getCapabilities", "getLaunchContext", "getAssetUrl", "close"],
           ai: ["generate", "chat", "embed", "classify"],
           user: ["getProfile", "getPersona", "getPreferences"],
