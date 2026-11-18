@@ -1164,7 +1164,7 @@ export async function sendGatheringContact(sessionId: string, context: string, s
     try {
         const text = await generateGatheringTask(sessionId,
             `你已经自主决定联系User。事件上下文：${context}\n现在按原生私聊格式生成你自己想说的话。可报备、分享趣事，也可按原生照片指令发送照片；不是必须发照片。不转述系统任务，不声称User参加了聚会。`, signal, "chat");
-        await validateGatheringOutput(sessionId, text, signal);
+        await validateGatheringOutput(sessionId, text, signal, "chat");
         // No await between final guard and native parser's synchronous insertion phase.
         if (signal.aborted || !isCurrent() || isBackgroundGenerationCancelled(sessionId) || kvGet(`chat-generating:${sessionId}`)) return "cancelled";
         await parseAndSaveResponse(text, sessionId, 0, undefined, loadChatMessages(sessionId), { gatheringEventId: eventId });

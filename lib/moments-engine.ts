@@ -347,16 +347,20 @@ async function triggerAIPost(characterId: string, event?: GatheringMomentRequest
             input.userIdentity?.name,
         );
         if (!responseText) { if (event) throw new Error("朋友圈生成返回空内容"); return; }
-        if (event) { await event.validate(responseText); event.signal.throwIfAborted(); }
+        const strippedResponse = responseText.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "").trim();
+        if (event) { await event.validate(strippedResponse); event.signal.throwIfAborted(); }
 
         // Extract cross-engine actions before moments-specific parsing
-        const { cleanText: postText, actions } = parseActionTags(responseText);
-        if (!event && actions.length > 0) {
-            dispatchActions(actions, { characterId, sourceEngine: "moments" })
+        const { cleanText: postText, actions } = parseActionTags(strippedResponse);
+        const nonMomentActions = actions.filter(a => a.type !== "朋友圈");
+        if (!event && nonMomentActions.length > 0) {
+            dispatchActions(nonMomentActions, { characterId, sourceEngine: "moments" })
                 .catch(err => console.warn("[Moments] Action dispatch failed:", err));
         }
 
-        const parsed = parseMomentPostResponse(postText);
+        const momentAction = actions.find(a => a.type === "朋友圈");
+        const candidateText = momentAction ? `[朋友圈]${momentAction.content}[/朋友圈]` : (postText.trim() || strippedResponse);
+        const parsed = parseMomentPostResponse(candidateText);
         if (!parsed) { if (event) throw new Error("朋友圈生成格式无效"); return; }
 
         // 内容去重：生图前先判重，命中直接丢弃（防止同一内容经多路径重复入库）
@@ -1681,14 +1685,15 @@ export function triggerCompletedOutingMoment(characterId: string, eventKey: stri
             messages.push({ role: 'user', content: `刚完整经历以下事件（已保存为记忆）：\n${eventMemory}\n是否想发朋友圈由你根据此刻心情、事件意义、人物习惯和原有预设、关系公开边界自行决定。无需每次发布。若不想发，只输出[不发布]。若想发，按原有朋友圈规则输出[朋友圈]正文[/朋友圈]，可带原有照片标记；不要说明幕后触发，不代替用户发帖。`, _debugMeta: { marker: 'completed_outing_moment_trigger' } });
             const raw = await callLLM(apiConfig, preset, messages, character.name, input.regexes, input.appTags, input.userIdentity?.name);
             if (!raw?.trim()) throw new Error('朋友圈判断未返回结果，可以重试');
-            const stripped = raw.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
-            const cleaned = parseActionTags(stripped).cleanText.trim();
-            if (/[[【]不发布[\]】]/.test(cleaned) && !/\[朋友圈\]/.test(cleaned)) {
+            const stripped = raw.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim();
+            const { cleanText: cleanedText, actions: outActions } = parseActionTags(stripped);
+            const momentAct = outActions.find(a => a.type === '朋友圈');
+            if (!momentAct && /[[【]不发布[\]】]/.test(stripped) && !/\[朋友圈\]/.test(stripped)) {
                 await kvSetAsync(ledgerKey, JSON.stringify({ phase: 'done', outcome: 'skipped' }));
                 return { outcome: 'skipped' };
             }
-            const blockInner = cleaned.match(/\[朋友圈\]([\s\S]*?)(?:\[\/朋友圈\]|$)/)?.[1]?.trim();
-            const parsed = blockInner !== undefined ? parseMomentPostResponse(`[朋友圈]${blockInner}[/朋友圈]`) : (/\[朋友圈\]/.test(cleaned) ? parseMomentPostResponse(cleaned) : null);
+            const candidate = momentAct ? `[朋友圈]${momentAct.content}[/朋友圈]` : (cleanedText.trim() || stripped);
+            const parsed = (momentAct || /\[朋友圈\]/.test(stripped)) ? parseMomentPostResponse(candidate) : null;
             if (!parsed) throw new Error('朋友圈未返回明确的发布或不发布结果，可以重试');
             ledger = { phase: 'prepared', ...parsed };
             await kvSetAsync(ledgerKey, JSON.stringify(ledger));
