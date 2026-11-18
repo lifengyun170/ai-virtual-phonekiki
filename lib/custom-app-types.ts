@@ -3,6 +3,7 @@ export const CUSTOM_APP_ICON_PREFIX = "custom_app:" as const;
 export type CustomAppIconId = `${typeof CUSTOM_APP_ICON_PREFIX}${string}`;
 
 export type CustomAppPermission =
+  | "gathering.manage"
   | "app.data.read"
   | "app.data.write"
   | "app.assets.read"

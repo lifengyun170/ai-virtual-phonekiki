@@ -347,6 +347,7 @@ export type DebugPromptRequestOptions = {
 };
 
 type ChatPromptBuildOptions = {
+    strictCharacterScope?: boolean;
     followUpCount?: number;
     followUpDelay?: number;
     timedWakeElapsedMinutes?: number;
@@ -1889,6 +1890,7 @@ export async function buildChatPromptMessages(
     const usesNativeActions = Boolean(toolsEnabled && nativeToolProtocolForConfig(config));
     const { recentBlocks, truncatedHistory, wbActivationContext, unifiedRecentItems } = prepareShortTermContext(character.id, resolvedAppId, {
         history: historyForPrompt,
+        strictCharacterScope: options?.strictCharacterScope,
         includeDirectChatEntries: isOfflineMode,
         includeNativeToolHistory: usesNativeActions,
         excludeOfflineSessionId: options?.excludeOfflineSessionId,
@@ -1941,6 +1943,7 @@ export async function buildChatPromptMessages(
 
     const llmMessages = assemblePromptPayload({
         character,
+        characterRelations: options?.strictCharacterScope ? "仅使用当前角色及其绑定世界书中的关系，不引入其他男主线。" : undefined,
         history: promptHistory,
         preset,
         worldBooks,

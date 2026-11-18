@@ -2,6 +2,9 @@
 // Type definitions for the Moments (朋友圈) feature.
 
 export type MomentPost = {
+    /** Native gathering provenance; also prevents cross-line exposure. */
+    gatheringEventId?: string;
+    lineCharacterId?: string;
     id: string;                     // "moment_timestamp_random"
     authorType: "user" | "character";
     authorId: string;               // characterId or "user"

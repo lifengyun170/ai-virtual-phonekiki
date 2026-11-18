@@ -180,7 +180,8 @@ function buildMomentsBilingualInstruction(enabled: boolean, customPrompt?: strin
  */
 async function resolveAssemblerInput(
     characterId: string,
-    task: "post" | "comment" | "npc" | "npc_reply" | "reply"
+    task: "post" | "comment" | "npc" | "npc_reply" | "reply",
+    strictCharacterScope = false,
 ): Promise<AssemblerResult | null> {
     const chars = loadCharacters();
     const character = chars.find(c => c.id === characterId);
@@ -225,7 +226,7 @@ async function resolveAssemblerInput(
         try {
             const coreResultsPromise = retrieveCoreMemoriesForPrompt(characterId, memConfig);
             // Use native timeline as retrieval context (same cross-app data as short-term memory)
-            const { wbActivationContext: recentCtx } = prepareShortTermContext(characterId, "moments");
+            const { wbActivationContext: recentCtx } = prepareShortTermContext(characterId, "moments", { strictCharacterScope });
             const [coreResults, results] = await Promise.all([
                 coreResultsPromise,
                 recentCtx.trim()
@@ -256,13 +257,14 @@ async function resolveAssemblerInput(
 
     // 9. Build AssemblerInput — unified short-term context
     const isNPC = task === "npc" || task === "npc_reply";
-    const { recentBlocks, wbActivationContext, unifiedRecentItems } = prepareShortTermContext(characterId, "moments");
+    const { recentBlocks, wbActivationContext, unifiedRecentItems } = prepareShortTermContext(characterId, "moments", { strictCharacterScope });
 
     // Calendar schedule (NPC doesn't get character's schedule)
     const scheduleSummary = isNPC ? undefined : buildCalendarScheduleMarker("character", characterId, getWeekStartIso(new Date()));
 
     const input: AssemblerInput = {
         character,
+        characterRelations: strictCharacterScope ? "仅使用当前角色及其绑定世界书中的关系，不引入其他男主线。" : undefined,
         history: [],
         preset,
         worldBooks,
@@ -274,7 +276,7 @@ async function resolveAssemblerInput(
         longTermMemories,
         scheduleSummary,
         worldBookActivationContext: wbActivationContext,
-        activateAllWorldBooks: false,
+        activateAllWorldBooks: strictCharacterScope,
         chatBilingualInstruction,
         recentBlocks,
         unifiedRecentItems,
@@ -287,16 +289,26 @@ async function resolveAssemblerInput(
 
 // ── AI Post Generation ──
 
-async function triggerAIPost(characterId: string): Promise<void> {
+type GatheringMomentRequest = { eventId: string; context: string; signal: AbortSignal; validate: (text: string) => Promise<void> };
+
+export async function requestGatheringMoment(characterId: string, event: GatheringMomentRequest): Promise<"done" | "busy"> {
+    if (loadMomentPosts().some(p => p.gatheringEventId === event.eventId && p.authorId === characterId)) return "done";
+    if (isGenerating) return "busy";
+    await triggerAIPost(characterId, event);
+    return "done";
+}
+
+async function triggerAIPost(characterId: string, event?: GatheringMomentRequest): Promise<void> {
     isGenerating = true;
     // Always update schedule first to prevent retry storms on failure
     updateScheduleAfterPost(characterId);
     try {
-        const resolved = await resolveAssemblerInput(characterId, "post");
-        if (!resolved) return;
+        const resolved = await resolveAssemblerInput(characterId, "post", Boolean(event));
+        if (!resolved) { if (event) throw new Error("朋友圈角色不存在"); return; }
 
         const { input, apiConfig, preset, character } = resolved;
         if (!apiConfig) {
+            if (event) throw new Error("当前角色未配置朋友圈API");
             console.warn("[Moments] No API config for", character.name);
             return;
         }
@@ -304,14 +316,28 @@ async function triggerAIPost(characterId: string): Promise<void> {
         // Assemble prompt via shared pipeline
         const llmMessages = assemblePromptPayload(input);
 
+        if (event) {
+            const { GATHERING_RULES, parseGatheringJson } = await import("./gathering-prompt");
+            event.signal.throwIfAborted();
+            llmMessages.push({ role: "system", content: GATHERING_RULES });
+            llmMessages.push({ role: "user", content: `已结束的聚会事实：${event.context}` });
+            const decision = await sendLLMRequest(apiConfig, preset, [...llmMessages,
+                { role: "user", content: '根据你的人设、心情和这次经历，自行决定是否想发朋友圈；允许完全不发。不生成文案，仅返回严格JSON：{"publish":true或false}。' }
+            ], input.regexes ?? [], { characterName: character.name, userName: input.userIdentity?.name },
+                { appId: "moments", appTags: input.appTags, signal: event.signal });
+            event.signal.throwIfAborted();
+            if (parseGatheringJson(decision).publish !== true) return;
+        }
         // Append trigger instruction
         llmMessages.push({
             role: "user",
-            content: "请发一条朋友圈。",
+            content: event ? "你已自主决定发布朋友圈。结合刚才的聚会事件和当前人设/记忆，按原生朋友圈格式生成，不需要交代User身份。" : "请发一条朋友圈。",
             _debugMeta: { marker: "moments_trigger" },
         });
 
-        const responseText = await callLLM(
+        const responseText = event ? await sendLLMRequest(apiConfig, preset, llmMessages, input.regexes ?? [],
+            { characterName: character.name, userName: input.userIdentity?.name },
+            { appId: "moments", appTags: input.appTags, signal: event.signal }) : await callLLM(
             apiConfig,
             preset,
             llmMessages,
@@ -320,17 +346,18 @@ async function triggerAIPost(characterId: string): Promise<void> {
             input.appTags,
             input.userIdentity?.name,
         );
-        if (!responseText) return;
+        if (!responseText) { if (event) throw new Error("朋友圈生成返回空内容"); return; }
+        if (event) { await event.validate(responseText); event.signal.throwIfAborted(); }
 
         // Extract cross-engine actions before moments-specific parsing
         const { cleanText: postText, actions } = parseActionTags(responseText);
-        if (actions.length > 0) {
+        if (!event && actions.length > 0) {
             dispatchActions(actions, { characterId, sourceEngine: "moments" })
                 .catch(err => console.warn("[Moments] Action dispatch failed:", err));
         }
 
         const parsed = parseMomentPostResponse(postText);
-        if (!parsed) return;
+        if (!parsed) { if (event) throw new Error("朋友圈生成格式无效"); return; }
 
         // 内容去重：生图前先判重，命中直接丢弃（防止同一内容经多路径重复入库）
         if (findRecentDuplicateMomentPost({
@@ -344,12 +371,13 @@ async function triggerAIPost(characterId: string): Promise<void> {
         }
 
         const contacts = loadChatContacts();
-        const visibility = contacts.map(c => c.characterId);
+        const visibility = event ? [characterId] : contacts.map(c => c.characterId);
 
         // 先入库再生图：帖子立即可见，生图慢/超时/页面被杀都不会丢帖
         const post = addMomentPost({
             authorType: "character",
             authorId: characterId,
+            ...(event ? { gatheringEventId: event.eventId, lineCharacterId: characterId } : {}),
             content: parsed.content,
             photoDescription: parsed.photoDescription,
             photoUseReferenceImage: parsed.photoUseReferenceImage === true,
@@ -366,13 +394,15 @@ async function triggerAIPost(characterId: string): Promise<void> {
         }
 
         // Increment event counter for auto-summarization (native data read at summarization time)
-        incrementEventCounter(characterId);
-        maybeRunSummarization(characterId, character.name)
-            .catch(err => console.warn("[Moments] Summarization check failed:", err));
+        if (!event) {
+            incrementEventCounter(characterId);
+            maybeRunSummarization(characterId, character.name)
+                .catch(err => console.warn("[Moments] Summarization check failed:", err));
+        }
 
         dispatchMomentsUpdated();
         // Character's post → NPC reactions (not other main characters)
-        generateNPCReactions(post, character);
+        if (!event) generateNPCReactions(post, character);
 
     } finally {
         isGenerating = false;

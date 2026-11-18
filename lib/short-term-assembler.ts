@@ -64,6 +64,7 @@ export type NativeTimelineEntry = {
     customAppId?: string;
     customAppName?: string;
     customAppLabel?: string;
+    shortTermOnly?: boolean;
 };
 
 export type NativeMomentComment = {
@@ -162,6 +163,7 @@ export function loadNativeTimeline(
     characterId: string,
     options?: {
         afterTimestamp?: string;
+        strictCharacterScope?: boolean;
         userName?: string;
         appId?: import("./settings-types").ContentAppId;
         excludeOfflineSessionId?: string;
@@ -180,7 +182,7 @@ export function loadNativeTimeline(
     const sessions = loadChatSessions();
     // Include direct chat session AND group sessions where this character participates
     const session = sessions.find(s => !s.isGroup && s.contactId === characterId);
-    const groupSessions = sessions.filter(s => s.isGroup && s.participantIds?.includes(characterId));
+    const groupSessions = options?.strictCharacterScope ? [] : sessions.filter(s => s.isGroup && s.participantIds?.includes(characterId));
 
     // Process group sessions
     for (const gs of groupSessions) {
@@ -263,6 +265,7 @@ export function loadNativeTimeline(
 
             entries.push({
                 id: msg.id,
+                shortTermOnly: Boolean(msg.gatheringEventId),
                 sourceApp: "chat",
                 sourceDetail: "group",
                 groupSessionId: gs.id,
@@ -290,6 +293,7 @@ export function loadNativeTimeline(
                 if (isSystemInstructionMessage(msg)) {
                     entries.push({
                         id: msg.id,
+                        shortTermOnly: Boolean(msg.gatheringEventId),
                         sourceApp: "chat",
                         sourceDetail: "system",
                         timestamp: msg.createdAt,
@@ -302,6 +306,7 @@ export function loadNativeTimeline(
                     const mTitle = msg.mediaData?.musicTitle || "未知歌曲";
                     entries.push({
                         id: msg.id,
+                        shortTermOnly: Boolean(msg.gatheringEventId),
                         sourceApp: "chat",
                         sourceDetail: "system",
                         timestamp: msg.createdAt,
@@ -311,6 +316,7 @@ export function loadNativeTimeline(
                 }
                 entries.push({
                     id: msg.id,
+                    shortTermOnly: Boolean(msg.gatheringEventId),
                     sourceApp: "chat",
                     sourceDetail: "system",
                     timestamp: msg.createdAt,
@@ -381,6 +387,7 @@ export function loadNativeTimeline(
 
             entries.push({
                 id: msg.id,
+                shortTermOnly: Boolean(msg.gatheringEventId),
                 sourceApp: "chat",
                 sourceDetail: "direct",
                 timestamp: msg.createdAt,
@@ -394,10 +401,13 @@ export function loadNativeTimeline(
     const posts = loadMomentPosts();
     for (const post of posts) {
         if (!canCharacterSeeMomentPost(post, characterId)) continue;
+        if (options?.strictCharacterScope && post.authorId !== characterId) continue;
         const isCharPost = post.authorId === characterId;
         const isUserPost = post.authorType === "user";
-        const comments = getVisibleMomentCommentsForCharacter(post, characterId, loadMomentComments(post.id));
-        const likes = getVisibleMomentLikesForCharacter(post, characterId, post.likes);
+        const comments = getVisibleMomentCommentsForCharacter(post, characterId, loadMomentComments(post.id))
+            .filter(c => !options?.strictCharacterScope || c.authorType !== "character" || c.authorId === characterId);
+        const likes = getVisibleMomentLikesForCharacter(post, characterId, post.likes)
+            .filter(c => !options?.strictCharacterScope || c.authorType !== "character" || c.authorId === characterId);
         const filteredComments = options?.afterTimestamp
             ? comments.filter(c => c.createdAt > options.afterTimestamp!)
             : comments;
@@ -497,6 +507,7 @@ export function loadNativeTimeline(
         entries.push({
             id: post.id,
             sourceApp: "moments",
+            shortTermOnly: Boolean(post.gatheringEventId),
             authorType: postAuthorType,
             postAuthorType,
             timestamp: eventTimestamp,
@@ -774,6 +785,7 @@ export function loadNativeTimeline(
             sourceDetail: "custom_app_event",
             authorType: "user",
             timestamp: customEntry.createdAt,
+            shortTermOnly: customEntry.data?.shortTermOnly === true,
             customAppId: customEntry.appId,
             customAppName: customEntry.appName,
             customAppLabel: label,
@@ -923,6 +935,7 @@ export function prepareShortTermContext(
     appId: string,
     options?: {
         userName?: string;
+        strictCharacterScope?: boolean;
         history?: ChatMessage[];
         excludeGroupSessionId?: string;
         excludeOfflineSessionId?: string;
@@ -939,6 +952,7 @@ export function prepareShortTermContext(
 } {
     const timeAware = resolvePromptTimeAware(options?.timeAware);
     let timeline = loadNativeTimeline(characterId, {
+        strictCharacterScope: options?.strictCharacterScope,
         userName: options?.userName,
         appId: appId as import("./settings-types").ContentAppId,
         excludeOfflineSessionId: options?.excludeOfflineSessionId,
@@ -1420,6 +1434,7 @@ export function formatTimelineForSummarization(
     entries: NativeTimelineEntry[],
     options?: { timeAware?: boolean },
 ): { eventsText: string; earliest: string; latest: string; count: number } | null {
+    entries = entries.filter(entry => !entry.shortTermOnly);
     if (entries.length === 0) return null;
 
     const timeAware = resolvePromptTimeAware(options?.timeAware);

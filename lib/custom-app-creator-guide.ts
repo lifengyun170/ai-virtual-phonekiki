@@ -1,6 +1,13 @@
 const CUSTOM_APP_CREATOR_GUIDE_LINES = [
   "# 小手机自定义 APP 制作说明",
   "",
+  "## 兄弟局宿主扩展（补丁 v1.0）",
+  "权限 `gathering.manage`：使用原生AI和宿主调度，消耗已配置API额度。",
+  "`AiPhone.gathering.status({characterId})` 返回当前角色的聚会；`AiPhone.gathering.recommend({characterId})` 返回推荐。",
+  "`AiPhone.gathering.start({characterId,date,location,activity,participants})` 即时开始；`AiPhone.gathering.end({characterId,eventId})` 幂等结束。",
+  "`AiPhone.gathering.retryStory({characterId,eventId})` 仅重试失败的未结束故事。",
+  "以上接口不接受预写聊天、朋友圈或记忆内容；原生引擎自行生成。所有事件由appId与characterId双重校验。",
+  "",
   "## 1. 这是什么",
   "",
   "你正在为\"仿真 AI 互动小手机\"制作一个能安装进【应用市场】的自定义 APP，可以是购物、打卡、短信、外卖、论坛、日记、工具箱等独立应用。",

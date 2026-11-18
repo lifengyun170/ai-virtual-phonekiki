@@ -28,7 +28,7 @@ const guide = read(GUIDE);
 
 // 顶层命名空间（用于过滤“像权限/方法”的 token，降噪）
 const NAMESPACES = new Set([
-  "app", "db", "ai", "user", "network", "tools", "events", "chat",
+  "gathering", "app", "db", "ai", "user", "network", "tools", "events", "chat",
   "characters", "ui", "notifications", "tasks", "wallet", "memory",
   "voice", "calendar", "world", "media", "geo", "room", "cloud", "bridge",
 ]);

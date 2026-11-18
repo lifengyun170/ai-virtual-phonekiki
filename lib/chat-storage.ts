@@ -87,6 +87,7 @@ export type NativeToolCallRecord = { id: string; name: string; args: Record<stri
 export type NativeToolResultRecord = { toolCallId: string; name: string; content: string };
 
 export type ChatMessage = {
+    gatheringEventId?: string;
     id: string;
     sessionId: string;
     role: ChatMessageRole;

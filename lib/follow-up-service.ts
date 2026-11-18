@@ -888,6 +888,7 @@ export async function parseAndSaveResponse(
         senderName?: string;
         silent?: boolean;
         responseBatchId?: string;
+        gatheringEventId?: string;
         /** 离线回端时沿用云端生成时间，避免多轮补账被“当前时间”打乱因果顺序。 */
         createdAt?: string;
         rawResponseText?: string;
@@ -969,6 +970,7 @@ export async function parseAndSaveResponse(
     if (triggerCall) {
         const callLabel = triggerCall === "voice" ? "语音通话" : "视频通话";
         pushChatMessage({
+            gatheringEventId: options?.gatheringEventId,
             sessionId,
             role: "system",
             content: `[我发起了${callLabel}]`,
@@ -981,6 +983,7 @@ export async function parseAndSaveResponse(
     if (filteredParts.length === 0) {
         if (statusPanel || innerMonologue || reasoningText) {
             pushChatMessage({
+                gatheringEventId: options?.gatheringEventId,
                 sessionId,
                 role: "assistant",
                 content: "",
@@ -999,6 +1002,7 @@ export async function parseAndSaveResponse(
         if (shortcutMarker) {
             const baseMs = options?.createdAt ? Date.parse(options.createdAt) : NaN;
             pushChatMessage({
+                gatheringEventId: options?.gatheringEventId,
                 sessionId,
                 role: "assistant",
                 content: shortcutMarker.text,
@@ -1009,6 +1013,7 @@ export async function parseAndSaveResponse(
                 senderName: options?.senderName,
             });
             pushChatMessage({
+                gatheringEventId: options?.gatheringEventId,
                 sessionId,
                 role: "system",
                 content: `发出快捷动作「${shortcutMarker.name}」`,
@@ -1041,6 +1046,7 @@ export async function parseAndSaveResponse(
     const saveShortcutMarkerPair = () => {
         if (!shortcutMarker) return;
         savedMessages.push(pushChatMessage({
+            gatheringEventId: options?.gatheringEventId,
             sessionId,
             role: "assistant",
             content: shortcutMarker.text,
@@ -1051,6 +1057,7 @@ export async function parseAndSaveResponse(
             senderName: options?.senderName,
         }));
         savedMessages.push(pushChatMessage({
+            gatheringEventId: options?.gatheringEventId,
             sessionId,
             role: "system",
             content: `发出快捷动作「${shortcutMarker.name}」`,
@@ -1063,6 +1070,7 @@ export async function parseAndSaveResponse(
         const generatedPart = buildGeneratedFollowUpImageMessage(filteredParts[i]);
         const createdAt = nextCreatedAt();
         const saved = pushChatMessage({
+            gatheringEventId: options?.gatheringEventId,
             sessionId,
             role: "assistant",
             content: generatedPart.content,
@@ -1134,4 +1142,38 @@ export async function parseAndSaveResponse(
     }
 
     return { hasVisible: true, newCount: currentCount + 1, stateValues };
+}
+
+/** Native, non-user event input: never insert a fake User message or execute tools. */
+export async function planGatheringContact(sessionId: string, context: string, signal?: AbortSignal): Promise<{ contact: boolean; delaySeconds: number }> {
+    const { generateGatheringTask, parseGatheringJson } = await import("./gathering-prompt");
+    const plan = parseGatheringJson(await generateGatheringTask(sessionId,
+        `事件上下文：${context}\n你是否想主动私聊User？可以不联系。不编写消息正文。根据性格、心情和事件决定是否联系，以及从现在起等多少秒（0—1800）。仅输出 {"contact":boolean,"delaySeconds":number}。`, signal));
+    return { contact: plan.contact === true, delaySeconds: Math.max(0, Math.min(1800, Number(plan.delaySeconds) || 0)) };
+}
+
+/** Uses the same native prompt builder, provider and rich-message/photo persistence as follow-ups. */
+export async function sendGatheringContact(sessionId: string, context: string, signal: AbortSignal, isCurrent: () => boolean, eventId?: string): Promise<"sent" | "busy" | "cancelled"> {
+    const { generateGatheringTask, validateGatheringOutput } = await import("./gathering-prompt");
+    const { kvGet } = await import("./kv-db");
+    if (backgroundGeneratingSessions.has(sessionId) || kvGet(`chat-generating:${sessionId}`)) return "busy";
+    if (signal.aborted || !isCurrent()) return "cancelled";
+    backgroundGeneratingSessions.add(sessionId);
+    backgroundReplyFiringSet.add(sessionId);
+    window.dispatchEvent(new CustomEvent("followup-started", { detail: { sessionId } }));
+    try {
+        const text = await generateGatheringTask(sessionId,
+            `你已经自主决定联系User。事件上下文：${context}\n现在按原生私聊格式生成你自己想说的话。可报备、分享趣事，也可按原生照片指令发送照片；不是必须发照片。不转述系统任务，不声称User参加了聚会。`, signal, "chat");
+        await validateGatheringOutput(sessionId, text, signal);
+        // No await between final guard and native parser's synchronous insertion phase.
+        if (signal.aborted || !isCurrent() || isBackgroundGenerationCancelled(sessionId) || kvGet(`chat-generating:${sessionId}`)) return "cancelled";
+        await parseAndSaveResponse(text, sessionId, 0, undefined, loadChatMessages(sessionId), { gatheringEventId: eventId });
+        // Deliberately do not schedule follow-ups or server bailout from this event.
+        return "sent";
+    } finally {
+        backgroundGeneratingSessions.delete(sessionId);
+        backgroundReplyFiringSet.delete(sessionId);
+        cancelledBackgroundSessions.delete(sessionId);
+        window.dispatchEvent(new CustomEvent("followup-fired", { detail: { sessionId } }));
+    }
 }

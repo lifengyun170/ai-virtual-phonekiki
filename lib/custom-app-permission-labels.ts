@@ -4,6 +4,7 @@
 // 显示英文原串，用户无法理解自己在授权什么。
 
 export const PERMISSION_LABELS: Record<string, string> = {
+  "gathering.manage": "运行兄弟局：原生AI、随机私聊、朋友圈自主决策及短期记忆（会消耗API额度）",
   "app.data.read": "读取本 APP 私有数据",
   "app.data.write": "写入本 APP 私有数据",
   "app.assets.read": "读取本 APP 资源文件",

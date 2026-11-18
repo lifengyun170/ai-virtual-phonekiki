@@ -242,6 +242,7 @@ function normalizePermission(value: unknown): CustomAppPermission | null {
     "chat.sendMessage",
     "chat.sendCard",
     "chat.requestReply",
+    "gathering.manage",
     "chat.contacts.write",
     "chat.tools",
     "characters.read",
