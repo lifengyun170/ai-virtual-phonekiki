@@ -292,7 +292,16 @@ async function resolveAssemblerInput(
 type GatheringMomentRequest = { eventId: string; context: string; signal: AbortSignal; validate: (text: string) => Promise<void> };
 
 export async function requestGatheringMoment(characterId: string, event: GatheringMomentRequest): Promise<"done" | "busy"> {
-    if (loadMomentPosts().some(p => p.gatheringEventId === event.eventId && p.authorId === characterId)) return "done";
+    const existingPost = loadMomentPosts().find(p => p.gatheringEventId === event.eventId && p.authorId === characterId);
+    if (existingPost) {
+        const hasReactions = existingPost.likes.length > 0 || loadMomentComments(existingPost.id).length > 0;
+        const hasPending = loadPendingReactions().some(r => r.postId === existingPost.id && r.type === "npc_reaction");
+        if (!hasReactions && !hasPending) {
+            const character = loadCharacters().find(c => c.id === characterId);
+            if (character) generateNPCReactions(existingPost, character);
+        }
+        return "done";
+    }
     if (isGenerating) return "busy";
     await triggerAIPost(characterId, event);
     return "done";
@@ -406,7 +415,7 @@ async function triggerAIPost(characterId: string, event?: GatheringMomentRequest
 
         dispatchMomentsUpdated();
         // Character's post → NPC reactions (not other main characters)
-        if (!event) generateNPCReactions(post, character);
+        generateNPCReactions(post, character);
 
     } finally {
         isGenerating = false;
@@ -440,7 +449,7 @@ async function buildNPCReactionMessages(
     post: MomentPost,
     character: Character,
 ): Promise<{ messages: LLMMessage[]; apiConfig: ApiConfig | null; preset: PresetConfig | null; regexes: RegexConfig[]; appTags?: string[]; userName?: string } | null> {
-    const resolved = await resolveAssemblerInput(character.id, "npc");
+    const resolved = await resolveAssemblerInput(character.id, "npc", Boolean(post.gatheringEventId || post.lineCharacterId));
     if (!resolved) return null;
 
     const { input, apiConfig, preset } = resolved;
