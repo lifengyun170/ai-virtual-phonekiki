@@ -11,6 +11,7 @@ function load(file, mocks = {}, globals = {}) {
   const fallback = new Proxy({}, { get: (_, key) => key === '__esModule' ? true : key === 'then' ? undefined : () => undefined });
   const context = { exports, module: { exports }, require(name) {
     if (Object.hasOwn(mocks, name)) return mocks[name];
+    if (name === './gathering-participant-memory') return load('lib/gathering-participant-memory.ts', mocks, globals);
     if (name === './gathering-policy') return load('lib/gathering-policy.ts', mocks, globals);
     if (name === './abort-utils') return { throwIfAborted: signal => signal?.throwIfAborted(), isAbortError: e => e?.name === 'AbortError' };
     return fallback;
