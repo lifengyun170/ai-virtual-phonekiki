@@ -10,6 +10,21 @@ export function parseGatheringJson(text: string): Record<string, unknown> {
     const start = stripped.indexOf("{");
     const end = stripped.lastIndexOf("}");
     const candidate = start >= 0 && end > start ? stripped.slice(start, end + 1) : stripped;
+    try {
+        const value: unknown = JSON.parse(candidate);
+        if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+    } catch {
+        for (let i = stripped.lastIndexOf("{"); i >= 0; i = stripped.lastIndexOf("{", i - 1)) {
+            const close = stripped.indexOf("}", i);
+            if (close < 0) continue;
+            for (let j = stripped.lastIndexOf("}"); j >= close; j = stripped.lastIndexOf("}", j - 1)) {
+                try {
+                    const val: unknown = JSON.parse(stripped.slice(i, j + 1));
+                    if (val && typeof val === "object" && !Array.isArray(val)) return val as Record<string, unknown>;
+                } catch { /* try next */ }
+            }
+        }
+    }
     const value: unknown = JSON.parse(candidate);
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("AI未返回有效JSON，请重试。");
     return value as Record<string, unknown>;
