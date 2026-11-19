@@ -342,6 +342,7 @@ html, body { min-height: 100%; }
     return true;
   }
   var api = {
+    privateWaves: { wake: function(payload){ return request("privateWaves.wake", payload); } },
     gathering: {
       status: function(payload){ return request('gathering.status', payload || {}); },
       recommend: function(payload){ return request('gathering.recommend', payload || {}); },
@@ -1080,6 +1081,22 @@ export function CustomAppRunner({
     }
     if (bridgeActionNeedsChatStorage(action)) {
       await hydrateChatStorage();
+    }
+
+    if (action === "privateWaves.wake") {
+      requirePermission("chat.sendMessage");
+      requirePermission("ai.generate");
+      requirePermission("characters.read");
+      requirePermission("app.data.read");
+      if (app.manifest.id !== "float.privatewaves") throw new Error("App 不匹配");
+      await Promise.all([hydrateKvDb(), ensureSettingsStorageHydrated(), hydrateChatStorage()]);
+      const characterId = String(record.characterId);
+      const row = readCustomAppCollection(app.id, collectionName("journal." + characterId))
+        .find(r => r.id === record.id && r.characterId === characterId);
+      if (!row || !row.synced || !["ordinary","intimate"].includes(String(row.kind)) ||
+          !loadCharacters().some(c => c.id === characterId)) throw new Error("梦境记录不可用");
+      const { wake } = await import("@/lib/private-waves");
+      return wake(ensureCharacterSession(characterId).id, String(row.id), String(row.dream));
     }
 
     if (action.startsWith("outing.")) {
