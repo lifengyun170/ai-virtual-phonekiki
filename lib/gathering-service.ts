@@ -382,7 +382,31 @@ export async function handleGatheringRequest(app: InstalledCustomApp, action: st
         const rt = live.get(e.id) || runtime(e); if (!rt.busy) void generateStory(e, rt); return get(e.id);
     }
     if (action === "gathering.retrySocial") {
-        if (e.status !== "ended" || !e.story || !e.summary) throw new Error("只有已生成完整故事并结束的聚会才能重试社交联动。");
+        if (!e.story || !e.summary) throw new Error("请等待完整故事生成后再重试社交联动。");
+        if (e.status === "active") {
+            const hostRt = live.get(e.id) || runtime(e);
+            if (["error", "interrupted"].includes(e.contactState) && !hostRt.busy) {
+                const patched = update(e.id, { contactState: "pending", contactError: undefined })!;
+                hostRt.sendAt = undefined;
+                void contactOpportunity(patched, hostRt);
+            }
+            if ((e.participantMemories || []).some(p => p.contextState === "error")) {
+                void prepareParticipantSocials(get(e.id)!, hostRt);
+            }
+            for (const p of (get(e.id)?.participantMemories || [])) {
+                if (!p.social || !["error", "interrupted"].includes(p.social.contactState)) continue;
+                const actor = get(p.social.id);
+                if (!actor) continue;
+                const prt = live.get(p.social.id) || runtime(actor);
+                if (prt.busy) continue;
+                const updatedActor = update(p.social.id, { contactState: "pending", contactError: undefined });
+                if (updatedActor) {
+                    prt.sendAt = undefined;
+                    void contactOpportunity(updatedActor, prt);
+                }
+            }
+            return get(e.id);
+        }
         const retryContact = ["error", "interrupted"].includes(e.contactState);
         const retryMoment = ["error", "interrupted"].includes(e.momentState);
         if (retryContact || retryMoment) {
