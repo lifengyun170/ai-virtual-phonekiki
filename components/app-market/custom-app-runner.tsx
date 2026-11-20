@@ -1096,7 +1096,7 @@ export function CustomAppRunner({
       if (!row || !row.synced || !["ordinary","intimate"].includes(String(row.kind)) ||
           !loadCharacters().some(c => c.id === characterId)) throw new Error("梦境记录不可用");
       const { wake } = await import("@/lib/private-waves");
-      return wake(ensureCharacterSession(characterId).id, String(row.id), String(row.dream));
+      return wake(ensureCharacterSession(characterId).id, String(row.id), String(row.dream), typeof record.wakeStyle === "string" ? record.wakeStyle.slice(0, 4000) : "");
     }
 
     if (action.startsWith("outing.")) {

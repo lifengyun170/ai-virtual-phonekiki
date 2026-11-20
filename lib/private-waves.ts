@@ -21,7 +21,7 @@ async function generate(sessionId: string, instruction: string, decision: boolea
         { appId: "chat", appTags: ["chat", "text"] });
 }
 
-export async function wake(session: string, id: string, dream: string) {
+export async function wake(session: string, id: string, dream: string, style = '') {
     const key = "private-wave:" + session + ":" + id;
     if (running.has(key)) throw new Error("这条梦境正在处理");
     running.add(key);
@@ -33,7 +33,7 @@ export async function wake(session: string, id: string, dream: string) {
             decision = JSON.parse(stored);
         } else {
             const plan = JSON.parse((await generate(session,
-                context + '。按人设决定现在要不要联系用户。返回 JSON，contact 为布尔值，reflection 用第三人称简述醒后的动作和动机，不写台词或声称已发送。', true)).trim().replace(/^```(?:json)?\s*|\s*```$/gi, ""));
+                context + '\n' + style + '\n由角色自主决定是否联系用户。只返回 JSON，contact 为是否想联系用户的布尔值，reflection 为醒后反应正文。此时尚未发送消息。', true)).trim().replace(/^```(?:json)?\s*|\s*```$/gi, ""));
             if (typeof plan.contact !== "boolean" || typeof plan.reflection !== "string" || !plan.reflection.trim()) throw new Error("醒后反应格式有误，可重试");
             decision = { contact: plan.contact, reflection: plan.reflection.trim(), complete: !plan.contact };
             kvSet(key, JSON.stringify(decision));
